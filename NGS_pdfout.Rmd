@@ -1,0 +1,1062 @@
+---
+title: "Highly efficient multiplex human T cell engineering without double-strand breaks using Cas9 base editors"
+output:
+  html_document:
+    fig_height: 6
+    fig_width: 10
+    toc: no
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+---
+### Supplementary Data 2
+##### November, 21st, 2018
+##### Beau R. Webber†, Cara-lin Lonetree†, Mitchell G. Kluesner, Matthew J. Johnson, Emily J. Pomeroy, Walker S. Lahr, Garrett Draper, Miechaleen Diers, Nicholas J. Slipek, Amber McElroy, Mark J. Osborn, Branden S. Moriarity
+##### Department of Pediatrics, Masonic Cancer Center, Center for Genome Engineering, Department of Medicine, Stem Cell Institute, University of Minnesota, Minneapolis, MN, USA
+
+
+```{r, include=FALSE}
+# Load packages required for data analysis
+require(dplyr)
+require(plyr)
+require(ggplot2)
+require(magrittr)
+library(readxl)
+library(scales)
+library(printr)
+library(readr)
+library(knitr)
+library(gridExtra)
+library(grid)
+```
+
+
+```{r, include=FALSE}
+analysis_name = "moriarity_TBE_NGS_compiled_att1"
+sample_information_path = "/Users/kluesner/Desktop/Research/NGS/CRISPR-DAV/analysis/moriarity_TBE_NGS_compiled_att1/sample_information.txt"
+
+color_fn = function(x, breaks = seq(0, 100, 1), pallete = c("white","#E3797D")){
+  color_fn_tmp2 = grDevices::colorRampPalette(pallete)
+  colors_vec = color_fn_tmp2(
+    (max(breaks) - min(breaks))/
+    ((max(breaks) - min(breaks))/(length(breaks)-1))
+    )
+  colors_vec[which.min(abs(x - breaks))]
+}
+
+window_start = -10
+window_end = 23
+table_digits = 1
+```
+
+
+```{r, include=FALSE}
+# Additional information about where the target base is for each sample. Import using datapasta::df_paste() in command line.
+# Conversely, may be good just to pull information from a .tsv file based on what people upload to the NGS analysis submission.
+sample_information = read_tsv(sample_information_path)
+
+# This function pulls out the target Cs from the gRNA sequence
+# This function assumes that the target base is that which is nearest to position 7
+sample_information$target_position = mapply(FUN = function(X){gregexpr(pattern ='c', X) %>% 
+    unlist(.) %>% 
+    .[which.min(abs(.-7))]}, X = sample_information$guide) %>% 
+    unname()
+
+## Filter these samples
+#exclude_samples = c(180, 166)
+#sample_information %<>% filter(!(number %in% exclude_samples))
+```
+
+
+
+```{r, include=FALSE}
+# Loading the data and initial cleaning and reshaping for analysis
+# Need to first run these commands in unix:
+  # analysis='moriarity_TBE_2_NGS'
+  # mkdir /Users/kluesner/Desktop/Research/NGS/CRISPR-DAV/completed/"$analysis"/snp
+  # mkdir /Users/kluesner/Desktop/Research/NGS/CRISPR-DAV/completed/"$analysis"/indel
+  # for f in /Users/kluesner/Desktop/Research/NGS/CRISPR-DAV/completed/"$analysis"/*/deliverables/*/Assets/*_snp.xlsx; do (mv "$f"/Users/kluesner/Desktop/Research/NGS/CRISPR-DAV/completed/"$analysis"/snp); done
+  # for f in /Users/kluesner/Desktop/Research/NGS/CRISPR-DAV/completed/"$analysis"/*/deliverables/*/Assets/*_len.xlsx; do (mv "$f" /Users/kluesner/Desktop/Research/NGS/CRISPR-DAV/completed/"$analysis"/indel); done
+
+# May need this command
+# mv /Users/kluesner/Desktop/Research/NGS/CRISPR-DAV/batch_analysis/moriarity_TBE_2_NGS_att2/*/site.bed/
+#    /Users/kluesner/Desktop/Research/NGS/CRISPR-DAV/completed/moriarity_TBE_2_NGS_att2/*/site.bed/
+
+analysis_folder =  paste0("/Users/kluesner/Desktop/Research/NGS/CRISPR-DAV/completed/", analysis_name)
+indel_folder = paste0(analysis_folder, "/indel")
+snp_folder = paste0(analysis_folder, "/snp")
+
+# Define the bases
+ACGT = c("A", "C", "G", "T")
+TGCA = c("T", "G", "C", "A")
+
+# A function for appending all of the excel files together
+merge_excel = function(folder){
+  files = list.files(folder)
+  read_excel %>% 
+    lapply(FUN = ., X = paste0(folder, "/", files)) %>%
+    plyr::ldply()
+}
+
+# Save the appended excel files for indels as a df.
+indels = merge_excel(indel_folder) %>% 
+  inner_join(., sample_information) %>% 
+  dplyr::select(-target_position, -Sample) %>% 
+  dplyr::rename(Sample = sample_name)
+
+indels_summarized = indels %>% 
+  aggregate(ReadCount~Sample*IndelLength, ., sum) %>%
+  inner_join(., indels %>% 
+               aggregate(ReadCount~Sample, ., sum) %>%
+               dplyr::rename('ReadSum' = 'ReadCount')) %>%
+  mutate(ReadPerc = ReadCount/ReadSum)
+
+# Save the appended excel files for snps as a df.
+snps = merge_excel(snp_folder) %>% 
+  inner_join(., sample_information) %>% 
+  dplyr::select(-target_position, -Sample) %>% 
+  dplyr::rename(Sample = sample_name)
+
+snps = aggregate(pos~Sample, snps, min) %>% 
+  dplyr::rename(., 'guide_start' = 'pos') %>%
+  inner_join(snps, .) %>%
+  mutate(rel_pos = pos-guide_start-11)
+snps_cleaned = bind_cols(
+  snps %>% tidyr::gather(., key = base, value = ReadCount, A, C, G, T) %>% dplyr::select(-PctA, -PctC, -PctG, -PctT),
+  snps %>% tidyr::gather(., key = base, value = ReadPerc, PctA, PctC, PctG, PctT) %>% dplyr::select(ReadPerc)
+)
+
+# The total read count from indels is not always the same as the total read count from snp data -- likely due to different pipelines?
+# Only 1.8% of samples demonstrated to be larger in the SNP
+# To ameliorate this the code is modified to just account for whichever one is larger.
+# based on email conversation with Xuning Wang, author of CRISPR-DAV.
+total_reads = inner_join(
+    snps %>% aggregate(total ~ Sample, ., max) %>% dplyr::rename(SNPReadSum = total),
+    indels %>% aggregate(ReadCount ~ Sample, ., sum) %>% dplyr::rename(IndelReadSum = ReadCount)) 
+  
+total_reads_indels = total_reads %>% dplyr::select(-SNPReadSum) %>% dplyr::rename(ReadSum = IndelReadSum)
+total_reads_snps = total_reads %>% dplyr::select(-IndelReadSum) %>% dplyr::rename(ReadSum = SNPReadSum)
+
+total_reads %<>%
+  mutate(ReadSum = {ifelse(SNPReadSum > IndelReadSum, SNPReadSum, IndelReadSum)}) %<>%
+  dplyr::select(Sample, ReadSum)
+
+# Ammend the indel and snp data with the proper total read count per sample
+#indels = indels %>% 
+ # dplyr::select(-ReadPct) %>%
+ # inner_join(., total_reads) %>%
+ # mutate(ReadPct = 100*(ReadCount/ReadSum))
+
+#snps_cleaned = snps_cleaned %>%
+#  dplyr::select(-ReadPerc) %>%
+#  inner_join(., total_reads) %>%
+#  mutate(ReadPerc = 100*(ReadCount/ReadSum))
+```
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+# Determine which samples failed
+# The additional two are not being caught for some reason, so now they are added here.
+failed_samples = total_reads_indels %>% filter(ReadSum < 250) %>% .$Sample   
+complete_failed_samples = total_reads_indels %>% filter(ReadSum == 0) %>% .$Sample 
+
+# Filter our completely failed samples
+filtered_sample_information = sample_information %>% 
+  filter(!(sample_name %in% complete_failed_samples))
+
+failed_sample_information = sample_information %>% 
+  filter(sample_name %in% complete_failed_samples)
+
+# Establish a list of samples that worked
+samples = filtered_sample_information$sample_name
+crisprdav_sample_names = filtered_sample_information$Sample
+```
+
+```{r, include = FALSE}
+# Clean the data with respect to polarity and base identity and position for graphing.
+# Read the sense for each sample
+# The senses for each sample is taken from the site.bed file generated by the CRISPR-DAV pipeline.
+get_sense = function(sample){
+paste0("/Users/kluesner/Desktop/Research/NGS/CRISPR-DAV/batch_analysis/", analysis_name, "/", sample, "/site.bed") %>% 
+  read.delim2(., header = FALSE) %>%
+  .$V6 %>% 
+  as.character() %>%
+  data.frame(senses = ., Sample = sample) %>% 
+  return()
+}
+
+#sample_senses = lapply(X = crisprdav_sample_names, FUN = get_sense) %>%
+#  ldply(., "data.frame") %>%
+#  mutate(senses={ifelse(senses == "+", 1, -1)}) %>% 
+#  inner_join(., sample_information) %>%
+#  dplyr::select(sample_name, senses) %>%
+#  dplyr::rename(Sample = sample_name)
+sample_senses = sample_information %>% dplyr::select(sample_name, senses) %>% dplyr::rename(Sample = sample_name)
+
+# Assign the antisense snp data to be used depending on the conditional guide matching later on.
+# change_here: This code alters based on the specific analysis, will need to change for 'sample_information'.
+snps_cleaned = data.frame(Sample = samples) %>%
+  inner_join(., sample_senses) %>%
+  inner_join(snps_cleaned, .) %>% 
+  inner_join(., data.frame(base = ACGT, antibase = TGCA)) %>%
+  inner_join(., data.frame(ref = ACGT, antiref = TGCA)) %>%
+  inner_join(., sample_information %>% dplyr::select(-Sample) %>% dplyr::rename(Sample = sample_name))
+```
+
+```{r, include = FALSE}
+# Function for reformatting the data to give the summary graphic
+orient_data = function(sample){
+summary_data = snps_cleaned %>%
+  filter(Sample == sample) %>%
+  mutate(rel_pos = {ifelse(senses == -1, 21-rel_pos, rel_pos)}) %>%
+  mutate(base = {ifelse(senses == 1, base, as.character(antibase))}) %>%
+  mutate(ref = {ifelse(senses == 1, ref, as.character(antiref))}) %>%
+  filter(rel_pos > window_start & rel_pos <= window_end)
+
+summary_data$base = factor(summary_data$base, levels = rev(ACGT))
+
+# may need to change the 4 to the position where the 1 shows up.
+if(summary_data$senses[1] == 1)
+  {guide = summary_data$ref[1:(length(summary_data$ref)/4)]
+   positions = c(window_start:-1, summary_data$rel_pos[4:(length(summary_data$rel_pos)/4)])} else
+     {guide = as.character(rev(summary_data$ref[1:(length(summary_data$ref)/4)]))
+      positions = c(window_start:-1, 1:window_end)}
+
+return(summary_data)
+}
+```
+
+```{r, include = FALSE}
+# Summary plots
+## Overall summary table
+## Manually adjust samples
+## Need to only go to 322 in the last code chunk for bioarxiv submission
+isUsuable = function(x){is.na(!(class(tryCatch(orient_data(x), error = function(e) e)) == "error")[2])}
+samples = samples[mapply(FUN = isUsuable, x = samples)]
+
+summary_data = lapply(samples, orient_data) %>% plyr::ldply("data.frame")
+```
+
+```{r, echo = FALSE}
+# Print Table
+#knitr::kable(summary_table)
+```
+
+```{r, include = FALSE}
+# Generate indel distribution function
+generate_indel_distribution = function(sample){
+
+indels_cleaned = indels %>%
+  filter(Sample == sample) %>%
+  aggregate(ReadPct ~ Sample*IndelLength, ., sum)
+
+perc_wt = indels_cleaned %>% filter(IndelLength == 0) %>% .$ReadPct %>% round(., 2) %>% as.character
+perc_tot_indel = indels_cleaned %>% filter(IndelLength != 0) %>% .$ReadPct %>% sum %>% round(., 2) %>% as.character
+perc_OofF_indels = indels_cleaned[as.numeric(which(indels_cleaned[,2]%%3L!=0L)),] %>% .$ReadPct %>% sum %>% round(., 2) %>% as.character
+
+plot = indels_cleaned %>%
+  ggplot(aes(x = IndelLength, y = ReadPct)) +
+  geom_bar(stat = "identity", fill = "#79A8D4", color = "black") +
+  theme_bw() +
+  ylab("Percent of Reads") + 
+  xlab("Indel Length") +
+  annotate(geom = "text", label = paste0("WT: ", perc_wt, "%"), x = -87.5, y = 90, size = 3) +
+  annotate(geom = "text", label = paste0("Total Indels: ", perc_tot_indel, "%"), x = -80, y = 80, size = 3) +
+  annotate(geom = "text", label = paste0("Frameshift Indels: ", perc_OofF_indels, "%"), x = -74.5, y = 70, size = 3) +
+  ggtitle(sample) +
+  scale_x_continuous(limits = c(-100,25), breaks = seq(-100,25,25)) +
+  scale_y_continuous(limits = c(0,100), breaks = seq(0,100,20)) +
+        theme(axis.ticks = element_blank(),
+              axis.text.x=element_text(size=11, color = "black"),
+              axis.text.y=element_text(size=11, color = "black"),
+              axis.title.x=element_text(size=12, color = "black"),
+              axis.title.y=element_text(size=12, color = "black"),
+              axis.ticks.x=element_line(size=.5, color = "black"),
+              axis.ticks.y=element_line(size=.5, color = "black"),
+              plot.title = element_text(hjust = -.03, size = 10),
+              panel.background = element_rect(fill = "transparent",colour = NA), # or theme_blank()
+              plot.background = element_rect(fill = "transparent",colour = NA),
+              aspect.ratio = 0.75#,
+              #plot.margin = margin(10,10,10,10)
+        ) +
+  coord_cartesian(clip = "off")
+
+return(plot)
+}
+```
+
+
+```{r, include = FALSE}
+# Generating table and bar plot function
+
+generate_plot = function(sample, plot){
+#sample = samples[1]; treatment = "Edited"
+
+tile_plot_data = snps_cleaned %>%
+  filter(Sample == sample) %>%
+  mutate(rel_pos = {ifelse(senses == -1, 21-rel_pos, rel_pos)}) %>%
+  mutate(base = {ifelse(senses == 1, base, as.character(antibase))}) %>%
+  mutate(ref = {ifelse(senses == 1, ref, as.character(antiref))}) %>%
+  filter(rel_pos > window_start & rel_pos <= window_end)
+
+tile_plot_data$base = factor(tile_plot_data$base, levels = rev(ACGT))
+
+if(tile_plot_data$senses[1] == 1)
+    {guide = tile_plot_data$ref[1:(length(tile_plot_data$ref)/4)]
+     #positions = c(window_start:-1, tile_plot_data$rel_pos[4:(length(tile_plot_data$rel_pos)/4)])
+         positions = c(window_start:-1, 1:window_end)
+     } else
+     {guide = as.character(rev(tile_plot_data$ref[1:(length(tile_plot_data$ref)/4)]))
+      positions = c(window_start:-1, 1:window_end)}
+
+  x_labels = paste0(guide, "[", positions, "]")
+  
+perc_tot_indel = indels %>%
+  filter(Sample == sample) %>%
+  aggregate(ReadPct ~ Sample*IndelLength, ., sum) %>% 
+  filter(IndelLength != 0) %>% 
+  .$ReadPct %>% 
+  sum
+
+indel_color = color_fn(perc_tot_indel)
+
+plotA = tile_plot_data %>%
+  ggplot(aes(x = rel_pos, y = base, fill = ReadPerc)) + 
+  geom_tile() +
+  ggtitle(sample) +
+  geom_rect(aes(xmin = 0.5, ymin = 0.5, xmax = 20.5, ymax = 4.5), color = "black", alpha = 0, lwd = 0.25) + # protospacer
+  geom_rect(aes(xmin = window_start+0.5, ymin = 0.5, xmax = 0.5, ymax = 4.5), color = "black", alpha = 0, lwd = 0.25) + # upstream
+  geom_rect(aes(xmin = 20.5, ymin = 0.5, xmax = window_end + 0.5, ymax = 4.5), color = "black", alpha = 0, lwd = 0.25) + # downstream
+  scale_fill_gradientn(colours = c("#FFFFFF","#FBEDEC", "#EDA9A6", "#E3797D", "#BC656D", "#9988A3", "#79A8D4"), 
+                       values = rescale(c(0,7.2, 33.3, 52,78.9,90, 100))) +
+  geom_text(aes(label = round(ReadPerc, table_digits)), angle = 0, size = 2.5) +
+  scale_x_discrete(limits = c((window_start+1):window_end), labels = c(parse(text = x_labels), "Indel"), position = "top") +
+        guides(fill = FALSE) + 
+       # scale_x_discrete(name = "test", breaks = 1, labels = "testes") + 
+        labs(x = NULL, y = NULL) + 
+  #annotate(geom = "text", x = -3, y = 2, label = "BE3 \n Site 1") +
+        theme(axis.ticks = element_blank(),
+              axis.line = element_blank(),
+              axis.text.x=element_text(size=9, color = "black", margin = margin(t = -10)),
+              axis.text.y=element_text(size=9, color = "black"),
+              plot.title = element_text(hjust = -.03, size = 10),
+              panel.background = element_rect(fill = "transparent",colour = NA), # or theme_blank()
+              plot.background = element_rect(fill = "transparent",colour = NA),
+              aspect.ratio = 1/13
+        ) +
+  coord_cartesian(clip = "off") +
+  annotate(geom = "rect",
+           xmin = window_end + 0.5, ymin = 3.5,
+           xmax = window_end + 1.9, ymax = 4.5,
+           fill = indel_color, color = "black", lwd = 0.25) +
+  annotate(geom = "text", label = as.character(round(perc_tot_indel, table_digits)), x = window_end + 1.2, y = 4, size = 2.75) +
+  annotate(geom = "text", label = "Indel", x = window_end + 1.2, y = 5, size = 2.75)
+  
+  
+
+
+plotB = tile_plot_data %>%
+  filter(base != ref) %>%
+  ggplot(aes(x = rel_pos, y =  ReadPerc, fill = base)) +
+  geom_bar(stat = "identity") +
+  xlab("") + 
+  ylab("Percent Alternative\nBasecall") +
+  ggtitle(sample) +
+  scale_x_discrete(limits = c((window_start+1):window_end), labels = parse(text = x_labels) , position = "bottom",
+                   breaks = c((window_start+1):window_end)) +
+  scale_y_continuous(limits = c(0,100), breaks = seq(0,100,20)) +
+  #geom_rect(aes(xmin = 0.5, ymin = 0.5, xmax = 20.5, ymax = 100), color = "black", alpha = 0, lwd = 0.25) +
+  #geom_rect(aes(xmin = -2.5, ymin = 0.5, xmax = 0.5, ymax = 100), color = "black", alpha = 0, lwd = 0.25) +
+  theme_bw() +
+  labs(fill="") +
+  scale_fill_manual(values=c("A"="darkgreen", "C"="royalblue", "G"="darkgrey", "T"="firebrick3")) +
+  theme(axis.text.x=element_text(size=11, color = "black"),
+              axis.text.y=element_text(size=11, color = "black"),
+              panel.background = element_rect(fill = "transparent",colour = NA), # or theme_blank()
+              plot.background = element_rect(fill = "transparent",colour = NA),
+              aspect.ratio = .18,
+              legend.position=c(0.95,.55),
+              legend.text = element_text(size = 12),
+              axis.title.x=element_text(size=13, color = "black"),
+              axis.title.y=element_text(size=13, color = "black"),
+              plot.title = element_text(hjust = -.03, size = 12),
+        ) +
+  coord_cartesian(clip = "off") +
+  geom_vline(xintercept = 20.5, color = "black") +
+  geom_vline(xintercept = 0.5, color = "black")
+
+plotC = NULL
+
+
+if(plot == "bar"){return(plotB)} else {
+  if(plot == "tile"){return(plotA)} else {
+    return(plotC)
+    
+  }
+}
+
+}
+
+#generate_plot("NKNGS-1-1", plot = "bar")
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+### Change the function used in all of the code chunks based on what plot you want
+### i.e. plotA, plotB, or plotC
+a = generate_indel_distribution(samples[1])
+b = generate_indel_distribution(samples[2])
+c = generate_indel_distribution(samples[3])
+d = generate_indel_distribution(samples[4])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[1])
+b = generate_indel_distribution(samples[2])
+c = generate_indel_distribution(samples[3])
+d = generate_indel_distribution(samples[4])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[5])
+b = generate_indel_distribution(samples[6])
+c = generate_indel_distribution(samples[7])
+d = generate_indel_distribution(samples[8])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[9])
+b = generate_indel_distribution(samples[10])
+c = generate_indel_distribution(samples[11])
+d = generate_indel_distribution(samples[12])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[13])
+b = generate_indel_distribution(samples[14])
+c = generate_indel_distribution(samples[15])
+d = generate_indel_distribution(samples[16])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[17])
+b = generate_indel_distribution(samples[18])
+c = generate_indel_distribution(samples[19])
+d = generate_indel_distribution(samples[20])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[21])
+b = generate_indel_distribution(samples[22])
+c = generate_indel_distribution(samples[23])
+d = generate_indel_distribution(samples[24])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[25])
+b = generate_indel_distribution(samples[26])
+c = generate_indel_distribution(samples[27])
+d = generate_indel_distribution(samples[28])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[29])
+b = generate_indel_distribution(samples[30])
+c = generate_indel_distribution(samples[31])
+d = generate_indel_distribution(samples[32])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[33])
+b = generate_indel_distribution(samples[34])
+c = generate_indel_distribution(samples[35])
+d = generate_indel_distribution(samples[36])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[37])
+b = generate_indel_distribution(samples[38])
+c = generate_indel_distribution(samples[39])
+d = generate_indel_distribution(samples[40])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[41])
+b = generate_indel_distribution(samples[42])
+c = generate_indel_distribution(samples[43])
+d = generate_indel_distribution(samples[44])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[45])
+b = generate_indel_distribution(samples[46])
+c = generate_indel_distribution(samples[47])
+d = generate_indel_distribution(samples[48])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[49])
+b = generate_indel_distribution(samples[50])
+c = generate_indel_distribution(samples[51])
+d = generate_indel_distribution(samples[52])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[53])
+b = generate_indel_distribution(samples[54])
+c = generate_indel_distribution(samples[55])
+d = generate_indel_distribution(samples[56])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[57])
+b = generate_indel_distribution(samples[58])
+c = generate_indel_distribution(samples[59])
+d = generate_indel_distribution(samples[60])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[61])
+b = generate_indel_distribution(samples[62])
+c = generate_indel_distribution(samples[63])
+d = generate_indel_distribution(samples[64])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[65])
+b = generate_indel_distribution(samples[66])
+c = generate_indel_distribution(samples[67])
+d = generate_indel_distribution(samples[68])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[69])
+b = generate_indel_distribution(samples[70])
+c = generate_indel_distribution(samples[71])
+d = generate_indel_distribution(samples[72])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[73])
+b = generate_indel_distribution(samples[74])
+c = generate_indel_distribution(samples[75])
+d = generate_indel_distribution(samples[76])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[77])
+b = generate_indel_distribution(samples[78])
+c = generate_indel_distribution(samples[79])
+d = generate_indel_distribution(samples[80])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[81])
+b = generate_indel_distribution(samples[82])
+c = generate_indel_distribution(samples[83])
+d = generate_indel_distribution(samples[84])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[85])
+b = generate_indel_distribution(samples[86])
+c = generate_indel_distribution(samples[87])
+d = generate_indel_distribution(samples[88])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[89])
+b = generate_indel_distribution(samples[90])
+c = generate_indel_distribution(samples[91])
+d = generate_indel_distribution(samples[92])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[93])
+b = generate_indel_distribution(samples[94])
+c = generate_indel_distribution(samples[95])
+d = generate_indel_distribution(samples[96])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[97])
+b = generate_indel_distribution(samples[98])
+c = generate_indel_distribution(samples[99])
+d = generate_indel_distribution(samples[100])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[101])
+b = generate_indel_distribution(samples[102])
+c = generate_indel_distribution(samples[103])
+d = generate_indel_distribution(samples[104])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[105])
+b = generate_indel_distribution(samples[106])
+c = generate_indel_distribution(samples[107])
+d = generate_indel_distribution(samples[108])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[109])
+b = generate_indel_distribution(samples[110])
+c = generate_indel_distribution(samples[111])
+d = generate_indel_distribution(samples[112])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[113])
+b = generate_indel_distribution(samples[114])
+c = generate_indel_distribution(samples[115])
+d = generate_indel_distribution(samples[116])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[117])
+b = generate_indel_distribution(samples[118])
+c = generate_indel_distribution(samples[119])
+d = generate_indel_distribution(samples[120])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[121])
+b = generate_indel_distribution(samples[122])
+c = generate_indel_distribution(samples[123])
+d = generate_indel_distribution(samples[124])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[125])
+b = generate_indel_distribution(samples[126])
+c = generate_indel_distribution(samples[127])
+d = generate_indel_distribution(samples[128])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[129])
+b = generate_indel_distribution(samples[130])
+c = generate_indel_distribution(samples[131])
+d = generate_indel_distribution(samples[132])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[133])
+b = generate_indel_distribution(samples[134])
+c = generate_indel_distribution(samples[135])
+d = generate_indel_distribution(samples[136])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[137])
+b = generate_indel_distribution(samples[138])
+c = generate_indel_distribution(samples[139])
+d = generate_indel_distribution(samples[140])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[141])
+b = generate_indel_distribution(samples[142])
+c = generate_indel_distribution(samples[143])
+d = generate_indel_distribution(samples[144])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[145])
+b = generate_indel_distribution(samples[146])
+c = generate_indel_distribution(samples[147])
+d = generate_indel_distribution(samples[148])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[149])
+b = generate_indel_distribution(samples[150])
+c = generate_indel_distribution(samples[151])
+d = generate_indel_distribution(samples[152])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[153])
+b = generate_indel_distribution(samples[154])
+c = generate_indel_distribution(samples[155])
+d = generate_indel_distribution(samples[156])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[157])
+b = generate_indel_distribution(samples[158])
+c = generate_indel_distribution(samples[159])
+d = generate_indel_distribution(samples[160])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[161])
+b = generate_indel_distribution(samples[162])
+c = generate_indel_distribution(samples[163])
+d = generate_indel_distribution(samples[164])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[165])
+b = generate_indel_distribution(samples[166])
+c = generate_indel_distribution(samples[167])
+d = generate_indel_distribution(samples[168])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[169])
+b = generate_indel_distribution(samples[170])
+c = generate_indel_distribution(samples[171])
+d = generate_indel_distribution(samples[172])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[173])
+b = generate_indel_distribution(samples[174])
+c = generate_indel_distribution(samples[175])
+d = generate_indel_distribution(samples[176])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[177])
+b = generate_indel_distribution(samples[178])
+c = generate_indel_distribution(samples[179])
+d = generate_indel_distribution(samples[180])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[181])
+b = generate_indel_distribution(samples[182])
+c = generate_indel_distribution(samples[183])
+d = generate_indel_distribution(samples[184])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[185])
+b = generate_indel_distribution(samples[186])
+c = generate_indel_distribution(samples[187])
+d = generate_indel_distribution(samples[188])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[189])
+b = generate_indel_distribution(samples[190])
+c = generate_indel_distribution(samples[191])
+d = generate_indel_distribution(samples[192])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[193])
+b = generate_indel_distribution(samples[194])
+c = generate_indel_distribution(samples[195])
+d = generate_indel_distribution(samples[196])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[197])
+b = generate_indel_distribution(samples[198])
+c = generate_indel_distribution(samples[199])
+d = generate_indel_distribution(samples[200])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[201])
+b = generate_indel_distribution(samples[202])
+c = generate_indel_distribution(samples[203])
+d = generate_indel_distribution(samples[204])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[205])
+b = generate_indel_distribution(samples[206])
+c = generate_indel_distribution(samples[207])
+d = generate_indel_distribution(samples[208])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[209])
+b = generate_indel_distribution(samples[210])
+c = generate_indel_distribution(samples[211])
+d = generate_indel_distribution(samples[212])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[213])
+b = generate_indel_distribution(samples[214])
+c = generate_indel_distribution(samples[215])
+d = generate_indel_distribution(samples[216])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[217])
+b = generate_indel_distribution(samples[218])
+c = generate_indel_distribution(samples[219])
+d = generate_indel_distribution(samples[220])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[221])
+b = generate_indel_distribution(samples[222])
+c = generate_indel_distribution(samples[223])
+d = generate_indel_distribution(samples[224])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[225])
+b = generate_indel_distribution(samples[226])
+c = generate_indel_distribution(samples[227])
+d = generate_indel_distribution(samples[228])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[229])
+b = generate_indel_distribution(samples[230])
+c = generate_indel_distribution(samples[231])
+d = generate_indel_distribution(samples[232])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[233])
+b = generate_indel_distribution(samples[234])
+c = generate_indel_distribution(samples[235])
+d = generate_indel_distribution(samples[236])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[237])
+b = generate_indel_distribution(samples[238])
+c = generate_indel_distribution(samples[239])
+d = generate_indel_distribution(samples[240])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[241])
+b = generate_indel_distribution(samples[242])
+c = generate_indel_distribution(samples[243])
+d = generate_indel_distribution(samples[244])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[245])
+b = generate_indel_distribution(samples[246])
+c = generate_indel_distribution(samples[247])
+d = generate_indel_distribution(samples[248])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[249])
+b = generate_indel_distribution(samples[250])
+c = generate_indel_distribution(samples[251])
+d = generate_indel_distribution(samples[252])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[253])
+b = generate_indel_distribution(samples[254])
+c = generate_indel_distribution(samples[255])
+d = generate_indel_distribution(samples[256])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[257])
+b = generate_indel_distribution(samples[258])
+c = generate_indel_distribution(samples[259])
+d = generate_indel_distribution(samples[260])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[261])
+b = generate_indel_distribution(samples[262])
+c = generate_indel_distribution(samples[263])
+d = generate_indel_distribution(samples[264])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[265])
+b = generate_indel_distribution(samples[266])
+c = generate_indel_distribution(samples[267])
+d = generate_indel_distribution(samples[268])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[269])
+b = generate_indel_distribution(samples[270])
+c = generate_indel_distribution(samples[271])
+d = generate_indel_distribution(samples[272])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[273])
+b = generate_indel_distribution(samples[274])
+c = generate_indel_distribution(samples[275])
+d = generate_indel_distribution(samples[276])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[277])
+b = generate_indel_distribution(samples[278])
+c = generate_indel_distribution(samples[279])
+d = generate_indel_distribution(samples[280])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[281])
+b = generate_indel_distribution(samples[282])
+c = generate_indel_distribution(samples[283])
+d = generate_indel_distribution(samples[284])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[285])
+b = generate_indel_distribution(samples[286])
+c = generate_indel_distribution(samples[287])
+d = generate_indel_distribution(samples[288])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[289])
+b = generate_indel_distribution(samples[290])
+c = generate_indel_distribution(samples[291])
+d = generate_indel_distribution(samples[292])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[293])
+b = generate_indel_distribution(samples[294])
+c = generate_indel_distribution(samples[295])
+d = generate_indel_distribution(samples[296])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[297])
+b = generate_indel_distribution(samples[298])
+c = generate_indel_distribution(samples[299])
+d = generate_indel_distribution(samples[300])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[301])
+b = generate_indel_distribution(samples[302])
+c = generate_indel_distribution(samples[303])
+d = generate_indel_distribution(samples[304])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[305])
+b = generate_indel_distribution(samples[306])
+c = generate_indel_distribution(samples[307])
+d = generate_indel_distribution(samples[308])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[309])
+b = generate_indel_distribution(samples[310])
+c = generate_indel_distribution(samples[311])
+d = generate_indel_distribution(samples[312])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[313])
+b = generate_indel_distribution(samples[314])
+c = generate_indel_distribution(samples[315])
+d = generate_indel_distribution(samples[316])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[317])
+b = generate_indel_distribution(samples[318])
+c = generate_indel_distribution(samples[319])
+d = generate_indel_distribution(samples[320])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+a = generate_indel_distribution(samples[321])
+b = generate_indel_distribution(samples[322])
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
